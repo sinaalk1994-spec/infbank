@@ -16,3 +16,10 @@ document.querySelectorAll('form').forEach(form=>form.addEventListener('submit',(
  if(form.method.toLowerCase()==='post') setTimeout(()=>{form.querySelectorAll('button[type="submit"],button:not([type])').forEach(b=>{b.disabled=true;b.classList.add('loading');});},0);
 }));
 document.querySelectorAll('[data-print]').forEach(button=>button.addEventListener('click',()=>window.print()));
+
+const rolePermissions={chair:['edit','finance','discount','export','audit','approve'],accountant:['edit','finance','export'],clerk:['edit'],viewer:[]};
+document.addEventListener('change',event=>{
+ const role=event.target.closest('[data-permission-preset]'); if(!role)return;
+ const form=role.closest('form'); const allowed=rolePermissions[role.value]||[];
+ form.querySelectorAll('input[name="permissions"]').forEach(input=>{input.checked=allowed.includes(input.value);});
+});

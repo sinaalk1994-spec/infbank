@@ -25,9 +25,9 @@
 <a class="{% if nav == 'archive' %}active{% endif %}" href="{% url 'archive' %}"><svg><use href="#folder"/></svg>بایگانی مدارک</a>
 {% if can_edit %}<a class="{% if nav == 'excel' %}active{% endif %}" href="{% url 'excel' %}"><svg><use href="#sheet"/></svg>ورود و خروج اکسل</a>{% endif %}
 <div class="nav-label">مدیریت سامانه</div>
-{% if user.is_superuser %}<a class="{% if nav == 'users' %}active{% endif %}" href="{% url 'users' %}"><svg><use href="#shield"/></svg>کاربران و دسترسی‌ها</a>{% endif %}
+{% if can_admin %}<a class="{% if nav == 'users' %}active{% endif %}" href="{% url 'users' %}"><svg><use href="#shield"/></svg>کاربران و دسترسی‌ها</a>{% endif %}
 {% if can_audit %}<a class="{% if nav == 'audit' %}active{% endif %}" href="{% url 'audit' %}"><svg><use href="#clock"/></svg>ردپای فعالیت‌ها</a>{% endif %}
-{% if user.is_superuser %}<a class="{% if nav == 'settings' %}active{% endif %}" href="{% url 'settings' %}"><svg><use href="#settings"/></svg>تنظیمات و تعرفه‌ها</a>{% endif %}</nav>
+{% if can_admin %}<a class="{% if nav == 'settings' %}active{% endif %}" href="{% url 'settings' %}"><svg><use href="#settings"/></svg>تنظیمات و تعرفه‌ها</a>{% endif %}</nav>
 <div class="sidebar-note"><svg><use href="#shield"/></svg><strong>هر پرونده، یک سابقه روشن</strong><p>اطلاعات اعضا و سوابق مالی<br>در یک فضای منظم و یکپارچه.</p></div>
 <div class="sidebar-footer"><span class="live-dot"></span>سال مالی {{ app.current_year|fa }}<span>نسخه ۱.۰</span></div></aside>
 <div class="app-shell"><header class="topbar"><button class="icon-button mobile-menu" aria-label="بازکردن منو" data-menu>☰</button><div class="breadcrumb">میز کار <span>/</span> <strong>{{ title }}</strong></div><form class="global-search" action="{% url 'members' %}"><svg><use href="#search"/></svg><input name="q" placeholder="جست‌وجوی نام، کد ملی یا شماره جواز…" aria-label="جست‌وجوی اعضا"></form><div class="profile"><div class="avatar small">{{ user.first_name|default:user.username|initials }}</div><span>{{ user.first_name|default:user.username }}<small><a href="{% url 'password' %}" title="تغییر رمز عبور">{{ role_label }} · حساب من</a></small></span><form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="icon-button" title="خروج" aria-label="خروج"><svg><use href="#logout"/></svg></button></form></div></header>

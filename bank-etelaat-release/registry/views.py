@@ -21,10 +21,10 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from .models import *
 from .forms import *
-from .services import allowed, require, audit, checked_auth, bill_year, bill_fee_head, receive, discount, reopen, ROLE_LABELS
+from .services import allowed, require, audit, checked_auth, bill_year, bill_fee_head, receive, discount, reopen, ROLE_LABELS, ROLE_DEFAULTS, CAPABILITY_LABELS
 
 def common(request):
-    return {'app':Settings.current(),'can_edit':allowed(request.user,'edit'),'can_finance':allowed(request.user,'finance'),'can_discount':allowed(request.user,'discount'),'can_export':allowed(request.user,'export'),'can_audit':allowed(request.user,'audit'),'role_label':'مدیر سامانه' if request.user.is_superuser else next((v for k,v in ROLE_LABELS.items() if request.user.is_authenticated and request.user.groups.filter(name=k).exists()),'کاربر')}
+    return {'app':Settings.current(),'can_edit':allowed(request.user,'edit'),'can_finance':allowed(request.user,'finance'),'can_discount':allowed(request.user,'discount'),'can_export':allowed(request.user,'export'),'can_audit':allowed(request.user,'audit'),'can_admin':allowed(request.user,'admin'),'role_label':'مدیر سامانه' if request.user.is_superuser else next((v for k,v in ROLE_LABELS.items() if request.user.is_authenticated and request.user.groups.filter(name=k).exists()),'کاربر')}
 
 def display_extra(value):
     if value is True: return 'بله'
@@ -104,7 +104,7 @@ def member_edit(request,pk=None):
         if pk:
             try:
                 approver=checked_auth(request,request.POST.get('admin_username',''),request.POST.get('admin_password',''),'approval')
-                if not approver.is_superuser or not approver.is_active: raise ValidationError('تأیید مدیر سامانه لازم است.')
+                if not allowed(approver,'approve'): raise ValidationError('تأیید کاربری که دسترسی تأیید دارد لازم است.')
                 reason=request.POST.get('reason','').strip()
                 if len(reason)<5: raise ValidationError('دلیل ویرایش را کامل وارد کنید.')
             except ValidationError as e:
@@ -132,7 +132,7 @@ def delete_license(request,pk):
     try:
         approver=checked_auth(request,request.POST.get('admin_username',''),request.POST.get('admin_password',''),'approval')
         reason=request.POST.get('reason','').strip()
-        if not approver.is_superuser or not approver.is_active: raise ValidationError('تأیید مدیر سامانه لازم است.')
+        if not allowed(approver,'approve'): raise ValidationError('تأیید کاربری که دسترسی تأیید دارد لازم است.')
         if len(reason)<5: raise ValidationError('دلیل حذف را کامل وارد کنید.')
         if lic.dues.exists() or lic.receipts.exists() or lic.documents.exists():
             raise ValidationError('این پرونده سابقه مالی یا مدرک دارد و حذف نمی‌شود. از ویرایش پرونده آن را غیرفعال کنید.')
@@ -269,6 +269,32 @@ def settings_view(request):
                 elif action=='tariff':
                     t=Tariff(year=int(normalize(request.POST.get('year'))),grade_id=int(request.POST.get('grade')),amount=int(normalize(request.POST.get('amount'))))
                     t.full_clean(); t.save(); audit(request.user,'ثبت تعرفه',f'tariff:{t.pk}',after=model_to_dict(t))
+                elif action=='tariff_manage':
+                    t=get_object_or_404(Tariff,pk=request.POST.get('tariff'))
+                    approver=checked_auth(request,request.POST.get('admin_username',''),request.POST.get('admin_password',''),'approval')
+                    reason=request.POST.get('reason','').strip()
+                    if not allowed(approver,'approve'): raise ValidationError('تأیید کاربری که دسترسی تأیید دارد لازم است.')
+                    if len(reason)<5: raise ValidationError('دلیل تغییر تعرفه را کامل وارد کنید.')
+                    before=model_to_dict(t)
+                    if request.POST.get('operation')=='delete':
+                        audit(request.user,'حذف تعرفه پایه با تأیید',f'tariff:{t.pk}',before=before,after={'approver':approver.username},reason=reason); t.delete()
+                    elif request.POST.get('operation')=='edit':
+                        t.year=int(normalize(request.POST.get('year'))); t.grade_id=int(request.POST.get('grade')); t.amount=int(normalize(request.POST.get('amount')))
+                        t.full_clean(); t.save(); audit(request.user,'ویرایش تعرفه پایه با تأیید',f'tariff:{t.pk}',before=before,after={**model_to_dict(t),'approver':approver.username},reason=reason)
+                    else: raise ValidationError('عملیات تعرفه معتبر نیست.')
+                elif action=='fee_tariff_manage':
+                    t=get_object_or_404(FeeTariff.objects.select_related('head'),pk=request.POST.get('tariff'))
+                    approver=checked_auth(request,request.POST.get('admin_username',''),request.POST.get('admin_password',''),'approval')
+                    reason=request.POST.get('reason','').strip()
+                    if not allowed(approver,'approve'): raise ValidationError('تأیید کاربری که دسترسی تأیید دارد لازم است.')
+                    if len(reason)<5: raise ValidationError('دلیل تغییر تعرفه را کامل وارد کنید.')
+                    before={'year':t.year,'head':t.head.name,'grade':t.grade.name,'amount':t.amount}
+                    if request.POST.get('operation')=='delete':
+                        audit(request.user,'حذف تعرفه سرفصل با تأیید',f'fee-tariff:{t.pk}',before=before,after={'approver':approver.username},reason=reason); t.delete()
+                    elif request.POST.get('operation')=='edit':
+                        t.year=int(normalize(request.POST.get('year'))); t.head_id=int(request.POST.get('head')); t.grade_id=int(request.POST.get('grade')); t.amount=int(normalize(request.POST.get('amount')))
+                        t.full_clean(); t.save(); audit(request.user,'ویرایش تعرفه سرفصل با تأیید',f'fee-tariff:{t.pk}',before=before,after={'year':t.year,'head':t.head.name,'grade':t.grade.name,'amount':t.amount,'approver':approver.username},reason=reason)
+                    else: raise ValidationError('عملیات تعرفه معتبر نیست.')
                 elif action=='fee_head':
                     head=FeeHead(name=request.POST.get('name','').strip(),description=request.POST.get('description','').strip())
                     head.full_clean(); head.save(); audit(request.user,'تعریف سرفصل دریافت',f'fee-head:{head.pk}',after=model_to_dict(head))
@@ -281,7 +307,7 @@ def settings_view(request):
                     head=get_object_or_404(FeeHead,pk=request.POST.get('head'))
                     approver=checked_auth(request,request.POST.get('admin_username',''),request.POST.get('admin_password',''),'approval')
                     reason=request.POST.get('reason','').strip()
-                    if not approver.is_superuser or not approver.is_active: raise ValidationError('تأیید مدیر سامانه لازم است.')
+                    if not allowed(approver,'approve'): raise ValidationError('تأیید کاربری که دسترسی تأیید دارد لازم است.')
                     if len(reason)<5: raise ValidationError('دلیل تغییر وضعیت را کامل وارد کنید.')
                     head.active=not head.active; head.save(update_fields=['active'])
                     audit(request.user,'تغییر وضعیت سرفصل',f'fee-head:{head.pk}',after={'active':head.active,'approver':approver.username},reason=reason)
@@ -316,12 +342,16 @@ def users_view(request):
                     if u.is_superuser: raise ValidationError('تغییر مدیر سامانه از این فرم مجاز نیست.')
                     role=request.POST.get('role')
                     if role not in ROLE_LABELS: raise ValidationError('نقش معتبر نیست.')
-                    before={'name':u.first_name,'roles':list(u.groups.values_list('name',flat=True))}
+                    permissions=sorted(set(request.POST.getlist('permissions')))
+                    if set(permissions)-set(CAPABILITY_LABELS): raise ValidationError('یکی از دسترسی‌های انتخاب‌شده معتبر نیست.')
+                    old_access=getattr(u,'custom_access',None)
+                    before={'name':u.first_name,'roles':list(u.groups.values_list('name',flat=True)),'permissions':old_access.permissions if old_access else ROLE_DEFAULTS.get(next(iter(u.groups.values_list('name',flat=True)),''),[])}
                     u.first_name=request.POST.get('name','').strip()[:150]
                     password=request.POST.get('password','')
                     if password: validate_password(password,u); u.set_password(password)
                     u.save(); group,_=Group.objects.get_or_create(name=role); u.groups.set([group])
-                    audit(request.user,'ویرایش حساب کاربری',f'user:{u.pk}',before,{'name':u.first_name,'role':role,'password_reset':bool(password)})
+                    UserPermission.objects.update_or_create(user=u,defaults={'permissions':permissions})
+                    audit(request.user,'ویرایش دسترسی‌های حساب کاربری',f'user:{u.pk}',before,{'name':u.first_name,'role':role,'permissions':permissions,'password_reset':bool(password)})
                 elif request.POST.get('action')=='toggle':
                     u=get_object_or_404(User,pk=request.POST.get('user'))
                     if u.is_superuser: raise ValidationError('غیرفعال‌کردن مدیر از این صفحه مجاز نیست.')
@@ -330,14 +360,22 @@ def users_view(request):
                 else:
                     role=request.POST.get('role')
                     if role not in ROLE_LABELS: raise ValidationError('نقش معتبر نیست.')
+                    permissions=sorted(set(request.POST.getlist('permissions')))
+                    if set(permissions)-set(CAPABILITY_LABELS): raise ValidationError('یکی از دسترسی‌های انتخاب‌شده معتبر نیست.')
                     u=User(username=request.POST.get('username','').strip(),first_name=request.POST.get('name','').strip())
                     u.full_clean(exclude=['password']); validate_password(request.POST.get('password',''),u)
                     u.set_password(request.POST['password']); u.save(); group,_=Group.objects.get_or_create(name=role); u.groups.add(group)
-                    audit(request.user,'ایجاد کاربر',f'user:{u.pk}',after={'username':u.username,'role':role})
+                    UserPermission.objects.create(user=u,permissions=permissions)
+                    audit(request.user,'ایجاد کاربر',f'user:{u.pk}',after={'username':u.username,'role':role,'permissions':permissions})
             messages.success(request,'اطلاعات کاربر ذخیره شد.')
         except (ValidationError,IntegrityError) as e: messages.error(request,error_message(e))
         return redirect('users')
-    return render(request,'registry/users.html',{'nav':'users','title':'کاربران و دسترسی‌ها','users':User.objects.prefetch_related('groups').all(),'roles':ROLE_LABELS.items()})
+    users=list(User.objects.prefetch_related('groups').all())
+    for u in users:
+        access=getattr(u,'custom_access',None)
+        role=next(iter(u.groups.values_list('name',flat=True)), '')
+        u.effective_permissions=set(access.permissions if access else ROLE_DEFAULTS.get(role,[]))
+    return render(request,'registry/users.html',{'nav':'users','title':'کاربران و دسترسی‌ها','users':users,'roles':ROLE_LABELS.items(),'permissions':CAPABILITY_LABELS.items(),'default_permissions':ROLE_DEFAULTS})
 
 @login_required
 def audit_view(request):

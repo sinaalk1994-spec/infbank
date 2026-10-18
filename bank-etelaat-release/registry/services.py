@@ -7,11 +7,18 @@ from django.utils import timezone
 from .models import *
 
 ROLE_LABELS = {'chair':'رئیس اتحادیه','accountant':'حسابدار','clerk':'کارشناس پرونده','viewer':'مشاهده‌گر'}
+CAPABILITY_LABELS = {'edit':'ویرایش پرونده‌ها','finance':'حسابداری و ثبت دریافت','discount':'ثبت تخفیف','export':'خروجی اکسل و گزارش','audit':'مشاهده ردپای فعالیت‌ها','approve':'تأیید اصلاح‌ها و عملیات حساس','admin':'مدیریت کاربران و تنظیمات'}
+ROLE_DEFAULTS = {'chair':['edit','finance','discount','export','audit','approve'],'accountant':['edit','finance','export'],'clerk':['edit'],'viewer':[]}
 
 def allowed(user, capability):
     if not user.is_authenticated or not user.is_active: return False
     if user.is_superuser: return True
+    try:
+        return capability in user.custom_access.permissions
+    except UserPermission.DoesNotExist:
+        pass
     role_map = {'edit':{'clerk','chair','accountant'},'finance':{'accountant','chair'},'discount':{'chair'},'export':{'chair','accountant'},'audit':{'chair'},'admin':set()}
+    if capability=='approve': return user.groups.filter(name='chair').exists()
     return user.groups.filter(name__in=role_map.get(capability,set())).exists()
 
 def require(user, capability):
@@ -113,7 +120,7 @@ def discount(user, due, amount, reason, percent=None):
 @transaction.atomic
 def reopen(actor, approver, due, reason):
     require(actor,'finance')
-    if not approver.is_superuser or not approver.is_active: raise PermissionDenied('تأیید مدیر سامانه لازم است.')
+    if not allowed(approver,'approve'): raise PermissionDenied('تأیید کاربری دارای دسترسی تأیید لازم است.')
     due = Due.objects.select_for_update().get(pk=due.pk)
     if not due.settled: raise ValidationError('این سال در وضعیت تسویه نیست.')
     if len(reason.strip()) < 5: raise ValidationError('دلیل اصلاح را کامل وارد کنید.')
