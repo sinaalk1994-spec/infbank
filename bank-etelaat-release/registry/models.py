@@ -76,15 +76,32 @@ class Tariff(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=['year','grade'],name='unique_tariff')]
 
+class FeeHead(models.Model):
+    name = models.CharField('عنوان سرفصل',max_length=100,unique=True)
+    description = models.CharField('توضیح',max_length=250,blank=True)
+    active = models.BooleanField('فعال',default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    def __str__(self): return self.name
+
+class FeeTariff(models.Model):
+    year = models.PositiveIntegerField('سال',validators=[MinValueValidator(1300),MaxValueValidator(1600)])
+    head = models.ForeignKey(FeeHead,on_delete=models.PROTECT,related_name='tariffs',verbose_name='سرفصل')
+    grade = models.ForeignKey(Grade,on_delete=models.PROTECT,verbose_name='درجه')
+    amount = models.PositiveBigIntegerField('مبلغ',validators=[MinValueValidator(1)])
+    class Meta:
+        constraints=[models.UniqueConstraint(fields=['year','head','grade'],name='unique_fee_tariff')]
+
 class Due(models.Model):
     license = models.ForeignKey(License,on_delete=models.PROTECT,related_name='dues')
+    fee_head = models.ForeignKey(FeeHead,on_delete=models.PROTECT,null=True,blank=True,related_name='dues',verbose_name='سرفصل دریافت')
+    fee_head_label = models.CharField('عنوان سرفصل هنگام صدور',max_length=100,blank=True)
     year = models.PositiveIntegerField(null=True,blank=True,validators=[MinValueValidator(1300),MaxValueValidator(1600)])
     basis = models.CharField(max_length=150)
     amount = models.PositiveBigIntegerField(validators=[MinValueValidator(1)])
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         ordering = ['year','id']
-        constraints = [models.UniqueConstraint(fields=['license','year'],name='unique_annual_due'),models.UniqueConstraint(fields=['license'],condition=Q(year__isnull=True),name='unique_opening_due'),models.CheckConstraint(condition=Q(amount__gt=0),name='positive_due')]
+        constraints = [models.UniqueConstraint(fields=['license','year'],condition=Q(year__isnull=False,fee_head__isnull=True),name='unique_annual_due'),models.UniqueConstraint(fields=['license','year','fee_head'],condition=Q(year__isnull=False,fee_head__isnull=False),name='unique_head_due'),models.UniqueConstraint(fields=['license'],condition=Q(year__isnull=True),name='unique_opening_due'),models.CheckConstraint(condition=Q(amount__gt=0),name='positive_due')]
     @property
     def paid(self): return sum(a.amount for a in self.allocations.all() if not a.reversed_at)
     @property
@@ -94,7 +111,9 @@ class Due(models.Model):
     @property
     def settled(self): return self.balance == 0
     @property
-    def label(self): return str(self.year) if self.year else 'مانده پیش از سامانه'
+    def label(self):
+        if not self.year: return 'مانده پیش از سامانه'
+        return f'{self.year} · {self.fee_head_label}' if self.fee_head_label else str(self.year)
 
 class Receipt(models.Model):
     request_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)

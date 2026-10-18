@@ -54,6 +54,21 @@ def bill_year(user, year):
     return count
 
 @transaction.atomic
+def bill_fee_head(user, year, head):
+    require(user,'finance')
+    licenses=list(License.objects.filter(active=True).select_related('grade'))
+    tariffs={t.grade_id:t for t in FeeTariff.objects.filter(year=year,head=head)}
+    missing=[l.grade.name for l in licenses if l.grade_id not in tariffs]
+    if missing: raise ValidationError('تعرفه این سرفصل برای درجه‌ها تعریف نشده: '+ '، '.join(sorted(set(missing))))
+    count=0
+    for lic in licenses:
+        t=tariffs[lic.grade_id]
+        _,created=Due.objects.get_or_create(license=lic,year=year,fee_head=head,defaults={'fee_head_label':head.name,'amount':t.amount,'basis':f'{head.name} {year} · {lic.grade.name}'})
+        count+=created
+    audit(user,'صدور سرفصل دریافت',f'fee-head:{head.pk}',after={'year':year,'count':count})
+    return count
+
+@transaction.atomic
 def receive(user, license, amount, method, reference, paid_on, due_id=None, receipt=None, request_id=None):
     require(user,'finance')
     License.objects.select_for_update().get(pk=license.pk)

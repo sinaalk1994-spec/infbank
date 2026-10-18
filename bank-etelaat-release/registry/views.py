@@ -17,9 +17,11 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 from .models import *
 from .forms import *
-from .services import allowed, require, audit, checked_auth, bill_year, receive, discount, reopen, ROLE_LABELS
+from .services import allowed, require, audit, checked_auth, bill_year, bill_fee_head, receive, discount, reopen, ROLE_LABELS
 
 def common(request):
     return {'app':Settings.current(),'can_edit':allowed(request.user,'edit'),'can_finance':allowed(request.user,'finance'),'can_discount':allowed(request.user,'discount'),'can_export':allowed(request.user,'export'),'can_audit':allowed(request.user,'audit'),'role_label':'مدیر سامانه' if request.user.is_superuser else next((v for k,v in ROLE_LABELS.items() if request.user.is_authenticated and request.user.groups.filter(name=k).exists()),'کاربر')}
@@ -53,7 +55,10 @@ def summarize(licenses, year):
     result=[]
     for lic in licenses:
         dues=list(lic.dues.all())
-        lic.current_due=next((d for d in dues if d.year==year),None)
+        lic.current_dues=[d for d in dues if d.year==year]
+        lic.current_issued=bool(lic.current_dues)
+        lic.current_settled=bool(lic.current_dues) and all(d.settled for d in lic.current_dues)
+        lic.current_due=next((d for d in lic.current_dues if d.fee_head_id is None),lic.current_dues[0] if lic.current_dues else None)
         lic.balance=sum(d.balance for d in dues)
         lic.past_balance=sum(d.balance for d in dues if d.year is None or d.year<year)
         lic.credit=sum(r.available for r in lic.receipts.all())
@@ -64,7 +69,7 @@ def summarize(licenses, year):
 def dashboard(request):
     year=Settings.current().current_year
     all_rows=summarize(get_licenses(),year)
-    current=[l.current_due for l in all_rows if l.current_due]
+    current=[d for l in all_rows for d in l.current_dues]
     billed=sum(d.amount for d in current)
     paid=sum(d.paid for d in current)
     settled=sum(d.settled for d in current)
@@ -80,8 +85,8 @@ def members(request):
     if grade.isdigit(): qs=qs.filter(grade_id=grade)
     rows=summarize(qs,Settings.current().current_year)
     status=request.GET.get('status','')
-    if status=='settled': rows=[r for r in rows if r.current_due and r.current_due.settled]
-    if status=='unpaid': rows=[r for r in rows if r.current_due and not r.current_due.settled]
+    if status=='settled': rows=[r for r in rows if r.current_dues and all(d.settled for d in r.current_dues)]
+    if status=='unpaid': rows=[r for r in rows if r.current_dues and any(not d.settled for d in r.current_dues)]
     page=Paginator(rows,15).get_page(request.GET.get('page'))
     return render(request,'registry/members.html',{'nav':'members','title':'اعضا و پرونده‌ها','rows':page,'page':page,'count':len(rows),'grades':Grade.objects.all(),'q':q,'status':status,'selected_grade':grade})
 
@@ -96,12 +101,21 @@ def member_edit(request,pk=None):
     before={'member':model_to_dict(member),'license':model_to_dict(lic)} if lic else {}
     old_grade=lic.grade_id if lic else None
     if request.method=='POST' and mf.is_valid() and lf.is_valid():
+        if pk:
+            try:
+                approver=checked_auth(request,request.POST.get('admin_username',''),request.POST.get('admin_password',''),'approval')
+                if not approver.is_superuser or not approver.is_active: raise ValidationError('تأیید مدیر سامانه لازم است.')
+                reason=request.POST.get('reason','').strip()
+                if len(reason)<5: raise ValidationError('دلیل ویرایش را کامل وارد کنید.')
+            except ValidationError as e:
+                messages.error(request,error_message(e)); return render(request,'registry/member_form.html',{'nav':'members','title':'ویرایش پرونده','mf':mf,'lf':lf,'is_edit':bool(pk)})
+        else: approver=None; reason=''
         with transaction.atomic():
             obj=lf.save(commit=False); obj.member=mf.save(); obj.save()
             if old_grade != obj.grade_id: GradeHistory.objects.create(license=obj,grade=obj.grade,actor=request.user)
-            audit(request.user,'ویرایش پرونده' if pk else 'ایجاد پرونده',f'license:{obj.pk}',before=before,after={'member':model_to_dict(obj.member),'license':model_to_dict(obj)})
+            audit(request.user,'ویرایش پرونده' if pk else 'ایجاد پرونده',f'license:{obj.pk}',before=before,after={'member':model_to_dict(obj.member),'license':model_to_dict(obj),'approver':approver.username if approver else ''},reason=reason)
         messages.success(request,'پرونده با موفقیت ذخیره شد.'); return redirect('detail',pk=obj.pk)
-    return render(request,'registry/member_form.html',{'nav':'members','title':'ویرایش پرونده' if pk else 'پرونده جدید','mf':mf,'lf':lf})
+    return render(request,'registry/member_form.html',{'nav':'members','title':'ویرایش پرونده' if pk else 'پرونده جدید','mf':mf,'lf':lf,'is_edit':bool(pk)})
 
 @login_required
 def detail(request,pk):
@@ -109,6 +123,29 @@ def detail(request,pk):
     if not lic: return get_object_or_404(License,pk=pk)
     lic=lic[0]
     return render(request,'registry/detail.html',{'nav':'members','title':'پرونده عضو','lic':lic,'payment_form':PaymentForm(lic),'debt_form':DebtForm(),'document_form':DocumentForm(),'history':Audit.objects.filter(target=f'license:{pk}').select_related('actor')[:50],'photo':lic.documents.filter(kind='photo').last(),'member_extra_values':[(f.label,display_extra(lic.member.extra.get(f.key,''))) for f in ExtraField.objects.filter(target='member')],'license_extra_values':[(f.label,display_extra(lic.extra.get(f.key,''))) for f in ExtraField.objects.filter(target='license')]})
+
+@login_required
+@require_POST
+def delete_license(request,pk):
+    require(request.user,'admin')
+    lic=get_object_or_404(License.objects.select_related('member'),pk=pk)
+    try:
+        approver=checked_auth(request,request.POST.get('admin_username',''),request.POST.get('admin_password',''),'approval')
+        reason=request.POST.get('reason','').strip()
+        if not approver.is_superuser or not approver.is_active: raise ValidationError('تأیید مدیر سامانه لازم است.')
+        if len(reason)<5: raise ValidationError('دلیل حذف را کامل وارد کنید.')
+        if lic.dues.exists() or lic.receipts.exists() or lic.documents.exists():
+            raise ValidationError('این پرونده سابقه مالی یا مدرک دارد و حذف نمی‌شود. از ویرایش پرونده آن را غیرفعال کنید.')
+        member=lic.member
+        with transaction.atomic():
+            before={'license':model_to_dict(lic),'member':member.pk}
+            GradeHistory.objects.filter(license=lic).delete()
+            audit(request.user,'حذف پرونده با تأیید مدیر',f'license:{pk}',before=before,reason=reason)
+            lic.delete()
+            if not member.licenses.exists(): member.delete()
+        messages.success(request,'پرونده حذف شد و سابقه حذف در ردپای فعالیت‌ها ثبت شد.')
+    except ValidationError as e: messages.error(request,error_message(e))
+    return redirect('members')
 
 @login_required
 @require_POST
@@ -232,6 +269,22 @@ def settings_view(request):
                 elif action=='tariff':
                     t=Tariff(year=int(normalize(request.POST.get('year'))),grade_id=int(request.POST.get('grade')),amount=int(normalize(request.POST.get('amount'))))
                     t.full_clean(); t.save(); audit(request.user,'ثبت تعرفه',f'tariff:{t.pk}',after=model_to_dict(t))
+                elif action=='fee_head':
+                    head=FeeHead(name=request.POST.get('name','').strip(),description=request.POST.get('description','').strip())
+                    head.full_clean(); head.save(); audit(request.user,'تعریف سرفصل دریافت',f'fee-head:{head.pk}',after=model_to_dict(head))
+                elif action=='fee_tariff':
+                    head=get_object_or_404(FeeHead,pk=request.POST.get('head'))
+                    year=int(normalize(request.POST.get('year'))); grade_id=int(request.POST.get('grade')); amount=int(normalize(request.POST.get('amount')))
+                    t,created=FeeTariff.objects.update_or_create(year=year,head=head,grade_id=grade_id,defaults={'amount':amount})
+                    t.full_clean(); audit(request.user,'ثبت تعرفه سرفصل',f'fee-tariff:{t.pk}',after={'year':year,'head':head.name,'grade':t.grade.name,'amount':amount})
+                elif action=='fee_head_toggle':
+                    head=get_object_or_404(FeeHead,pk=request.POST.get('head'))
+                    approver=checked_auth(request,request.POST.get('admin_username',''),request.POST.get('admin_password',''),'approval')
+                    reason=request.POST.get('reason','').strip()
+                    if not approver.is_superuser or not approver.is_active: raise ValidationError('تأیید مدیر سامانه لازم است.')
+                    if len(reason)<5: raise ValidationError('دلیل تغییر وضعیت را کامل وارد کنید.')
+                    head.active=not head.active; head.save(update_fields=['active'])
+                    audit(request.user,'تغییر وضعیت سرفصل',f'fee-head:{head.pk}',after={'active':head.active,'approver':approver.username},reason=reason)
                 elif action=='field':
                     field_form=ExtraFieldForm(request.POST)
                     if not field_form.is_valid(): raise ValidationError(field_form.errors.as_text())
@@ -241,11 +294,16 @@ def settings_view(request):
                 elif action=='bill':
                     count=bill_year(request.user,app.current_year)
                     messages.success(request,f'{count} بدهی جدید صادر شد؛ بدهی‌های موجود تغییر نکردند.')
+                elif action=='bill_fee_head':
+                    head=get_object_or_404(FeeHead,pk=request.POST.get('head'),active=True)
+                    year=int(normalize(request.POST.get('year')))
+                    count=bill_fee_head(request.user,year,head)
+                    messages.success(request,f'{count} بدهی «{head.name}» برای سال {year} صادر شد.')
                 else: raise ValidationError('عملیات ناشناخته است.')
             messages.success(request,'تغییرات ذخیره شد.')
         except (ValueError,ValidationError,IntegrityError) as e: messages.error(request,error_message(e))
         return redirect('settings')
-    return render(request,'registry/settings.html',{'nav':'settings','title':'تنظیمات و تعرفه‌ها','grades':Grade.objects.all(),'tariffs':Tariff.objects.select_related('grade').order_by('-year'),'fields':ExtraField.objects.all(),'extra_field_form':ExtraFieldForm(),'branding_form':BrandingForm(instance=app)})
+    return render(request,'registry/settings.html',{'nav':'settings','title':'تنظیمات و تعرفه‌ها','grades':Grade.objects.all(),'tariffs':Tariff.objects.select_related('grade').order_by('-year'),'fee_heads':FeeHead.objects.all().order_by('name'),'fee_tariffs':FeeTariff.objects.select_related('grade','head').order_by('-year','head__name'),'fields':ExtraField.objects.all(),'extra_field_form':ExtraFieldForm(),'branding_form':BrandingForm(instance=app)})
 
 @login_required
 def users_view(request):
@@ -296,18 +354,43 @@ def export_excel(request):
     all_fields=EXPORT_FIELDS+[(f'{f.target}_extra_{f.key}',f'{f.get_target_display()}: {f.label}') for f in ExtraField.objects.all()]
     selected=request.GET.getlist('field') or [k for k,v in all_fields]
     fields=[(k,v) for k,v in all_fields if k in selected]
-    wb=Workbook(); ws=wb.active; ws.title='اعضا'; ws.sheet_view.rightToLeft=True
+    wb=Workbook(); ws=wb.active; ws.title='خلاصه اعضا'; ws.sheet_view.rightToLeft=True
+    ws.append([f'گزارش اعضا و وضعیت مالی · سال {Settings.current().current_year}'])
+    ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=max(1,len(fields)))
     ws.append([v for k,v in fields])
     year=Settings.current().current_year
     for lic in summarize(get_licenses(),year):
-        row={'name':lic.member.name,'national_id':lic.member.national_id,'phone':lic.member.phone,'number':lic.number,'business_name':lic.business_name,'grade':lic.grade.name,'year':year,'settled':'تسویه' if lic.current_due and lic.current_due.settled else 'تسویه نشده' if lic.current_due else 'صادر نشده','past':lic.past_balance,'balance':lic.balance,'credit':lic.credit}
+        row={'name':lic.member.name,'national_id':lic.member.national_id,'phone':lic.member.phone,'number':lic.number,'business_name':lic.business_name,'grade':lic.grade.name,'year':year,'settled':'تسویه' if lic.current_dues and all(d.settled for d in lic.current_dues) else 'تسویه نشده' if lic.current_dues else 'صادر نشده','past':lic.past_balance,'balance':lic.balance,'credit':lic.credit}
         row.update({f'member_extra_{f.key}':display_extra(lic.member.extra.get(f.key,'')) for f in ExtraField.objects.filter(target='member')})
         row.update({f'license_extra_{f.key}':display_extra(lic.extra.get(f.key,'')) for f in ExtraField.objects.filter(target='license')})
         ws.append([row[k] for k,v in fields])
         for cell in ws[ws.max_row]:
             if isinstance(cell.value,str): cell.data_type='s'
-    ws.freeze_panes='A2'; ws.auto_filter.ref=ws.dimensions
-    for col in ws.columns: ws.column_dimensions[col[0].column_letter].width=24
+    ws.freeze_panes='A3'; ws.auto_filter.ref=f'A2:{get_column_letter(max(1,len(fields)))}{ws.max_row}'
+    navy='17324D'; teal='1A8C83'; pale='EAF3F5'; line=Side(style='thin',color='DCE5EA')
+    ws.row_dimensions[1].height=30; ws.row_dimensions[2].height=25
+    for cell in ws[1]: cell.fill=PatternFill('solid',fgColor=navy); cell.font=Font(name='Vazirmatn',size=14,bold=True,color='FFFFFF'); cell.alignment=Alignment(horizontal='right',vertical='center')
+    for cell in ws[2]: cell.fill=PatternFill('solid',fgColor=teal); cell.font=Font(name='Vazirmatn',bold=True,color='FFFFFF'); cell.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
+    for row in ws.iter_rows(min_row=3):
+        for cell in row:
+            cell.font=Font(name='Vazirmatn',size=10,color='17324D'); cell.fill=PatternFill('solid',fgColor='F5F8FA' if cell.row%2==1 else 'FFFFFF'); cell.alignment=Alignment(horizontal='right',vertical='center',wrap_text=True); cell.border=Border(bottom=line)
+        ws.row_dimensions[row[0].row].height=22
+    for idx,(key,label) in enumerate(fields,1): ws.column_dimensions[get_column_letter(idx)].width=min(36,max(14,len(label)+4))
+    dues=wb.create_sheet('ریز بدهی‌ها'); dues.sheet_view.rightToLeft=True
+    dues.append(['نام عضو','شماره جواز','واحد صنفی','سال','سرفصل','مبنای بدهی','مبلغ اولیه','تخفیف','پرداخت','مانده','وضعیت'])
+    for d in Due.objects.select_related('license__member','license','fee_head').prefetch_related('allocations','discounts').order_by('year','license__number','id'):
+        dues.append([d.license.member.name,d.license.number,d.license.business_name,d.year or 'مانده گذشته',d.fee_head_label or (d.fee_head.name if d.fee_head_id else 'حق عضویت'),d.basis,d.amount,d.discount,d.paid,d.balance,'تسویه' if d.settled else 'بدهکار'])
+    receipts=wb.create_sheet('دریافت‌ها'); receipts.sheet_view.rightToLeft=True
+    receipts.append(['شماره رسید','نام عضو','شماره جواز','تاریخ پرداخت','مبلغ','روش پرداخت','شماره پیگیری','ثبت‌کننده','اعتبار آزاد'])
+    for rec in Receipt.objects.select_related('license__member','actor').prefetch_related('allocations').order_by('-created_at'):
+        receipts.append([rec.pk,rec.license.member.name,rec.license.number,rec.paid_on,rec.amount,rec.get_method_display(),rec.reference,rec.actor.get_full_name() or rec.actor.username,rec.available])
+    for sheet in [dues,receipts]:
+        sheet.freeze_panes='A2'; sheet.auto_filter.ref=sheet.dimensions
+        for c in sheet[1]: c.fill=PatternFill('solid',fgColor=teal); c.font=Font(name='Vazirmatn',bold=True,color='FFFFFF'); c.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
+        for row in sheet.iter_rows(min_row=2):
+            for c in row: c.font=Font(name='Vazirmatn',size=10,color=navy); c.alignment=Alignment(horizontal='right',vertical='center',wrap_text=True); c.border=Border(bottom=line); c.fill=PatternFill('solid',fgColor='F5F8FA' if c.row%2==0 else 'FFFFFF')
+        for column in sheet.columns:
+            letter=column[0].column_letter; width=max((len(str(c.value or '')) for c in column[:50]),default=14); sheet.column_dimensions[letter].width=min(34,max(14,width+2))
     out=BytesIO(); wb.save(out); out.seek(0)
     audit(request.user,'خروجی اکسل','export',after={'fields':selected,'count':ws.max_row-1})
     return FileResponse(out,as_attachment=True,filename='members.xlsx')
