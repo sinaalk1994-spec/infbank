@@ -1,0 +1,13 @@
+<div class="brand-identity">
+  <a class="union-brand" href="{% url 'dashboard' %}" aria-label="{{ app.title }}">
+    {% if app.logo %}<img class="union-logo" src="{% url 'branding_image' 'logo' %}" alt="لوگوی {{ app.title }}">{% endif %}
+    <span class="union-title">{{ app.title }}</span>
+    <small class="union-subtitle">سامانه مدیریت اعضا و حق عضویت</small>
+  </a>
+  {% if app.designer_logo or app.designer_name %}
+  <div class="designer-credit" aria-label="طراح سامانه">
+    {% if app.designer_logo %}<img src="{% url 'branding_image' 'designer_logo' %}" alt="لوگوی {{ app.designer_name|default:'طراح سامانه' }}">{% endif %}
+    <div><span>طراحی و توسعه</span>{% if app.designer_name %}<strong>{{ app.designer_name }}</strong>{% endif %}</div>
+  </div>
+  {% endif %}
+</div>
