@@ -11,6 +11,17 @@ class Settings(models.Model):
     logo = models.FileField('لوگوی اتحادیه',upload_to=brand_path,blank=True)
     partner_logo = models.FileField('لوگوی نهاد بالادستی',upload_to=brand_path,blank=True)
     designer_logo = models.FileField('لوگوی طراح سامانه',upload_to=brand_path,blank=True)
+    letterhead_image = models.FileField('تصویر کامل سربرگ PNG',upload_to=brand_path,blank=True)
+    report_margin_top = models.PositiveSmallIntegerField('حاشیه بالای چاپ (میلی‌متر)',default=14)
+    report_margin_right = models.PositiveSmallIntegerField('حاشیه راست چاپ (میلی‌متر)',default=14)
+    report_margin_bottom = models.PositiveSmallIntegerField('حاشیه پایین چاپ (میلی‌متر)',default=14)
+    report_margin_left = models.PositiveSmallIntegerField('حاشیه چپ چاپ (میلی‌متر)',default=14)
+    report_date_x = models.PositiveSmallIntegerField('جای افقی تاریخ (درصد)',default=80)
+    report_date_y = models.PositiveSmallIntegerField('جای عمودی تاریخ (درصد)',default=25)
+    report_number_x = models.PositiveSmallIntegerField('جای افقی شماره (درصد)',default=80)
+    report_number_y = models.PositiveSmallIntegerField('جای عمودی شماره (درصد)',default=50)
+    report_attachment_x = models.PositiveSmallIntegerField('جای افقی پیوست (درصد)',default=80)
+    report_attachment_y = models.PositiveSmallIntegerField('جای عمودی پیوست (درصد)',default=75)
     designer_name = models.CharField('نام طراح / مجموعه طراح',max_length=120,blank=True)
     report_address = models.CharField('نشانی سربرگ',max_length=250,blank=True)
     report_phone = models.CharField('تلفن سربرگ',max_length=30,blank=True)
@@ -48,6 +59,7 @@ class License(models.Model):
     issued_on = models.CharField('تاریخ صدور شمسی',max_length=10,blank=True)
     expires_on = models.CharField('تاریخ انقضا شمسی',max_length=10,blank=True)
     active = models.BooleanField('فعال',default=True)
+    extra = models.JSONField('اطلاعات تکمیلی',default=dict,blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     def __str__(self): return self.business_name
 
@@ -131,8 +143,13 @@ class Document(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 class ExtraField(models.Model):
+    TARGETS=[('member','پرونده شخص'),('license','واحد صنفی / جواز')]
+    TYPES=[('text','متن'),('number','عدد'),('date','تاریخ شمسی'),('choice','انتخاب از فهرست'),('boolean','بله / خیر')]
     key = models.SlugField('شناسه انگلیسی',unique=True)
     label = models.CharField('عنوان فارسی',max_length=100)
+    target = models.CharField('محل نمایش',max_length=12,choices=TARGETS,default='member')
+    field_type = models.CharField('نوع فیلد',max_length=12,choices=TYPES,default='text')
+    choices = models.JSONField('گزینه‌ها',default=list,blank=True)
     required = models.BooleanField('الزامی',default=False)
 
 class Audit(models.Model):

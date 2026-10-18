@@ -24,6 +24,11 @@ from .services import allowed, require, audit, checked_auth, bill_year, receive,
 def common(request):
     return {'app':Settings.current(),'can_edit':allowed(request.user,'edit'),'can_finance':allowed(request.user,'finance'),'can_discount':allowed(request.user,'discount'),'can_export':allowed(request.user,'export'),'can_audit':allowed(request.user,'audit'),'role_label':'مدیر سامانه' if request.user.is_superuser else next((v for k,v in ROLE_LABELS.items() if request.user.is_authenticated and request.user.groups.filter(name=k).exists()),'کاربر')}
 
+def display_extra(value):
+    if value is True: return 'بله'
+    if value is False: return 'خیر'
+    return value
+
 def error_message(exc):
     return '؛ '.join(exc.messages) if isinstance(exc,ValidationError) else 'این رکورد قبلاً ثبت شده یا با اطلاعات موجود تداخل دارد.'
 
@@ -103,7 +108,7 @@ def detail(request,pk):
     lic=summarize(get_licenses().filter(pk=pk),Settings.current().current_year)
     if not lic: return get_object_or_404(License,pk=pk)
     lic=lic[0]
-    return render(request,'registry/detail.html',{'nav':'members','title':'پرونده عضو','lic':lic,'payment_form':PaymentForm(lic),'debt_form':DebtForm(),'document_form':DocumentForm(),'history':Audit.objects.filter(target=f'license:{pk}').select_related('actor')[:50],'photo':lic.documents.filter(kind='photo').last(),'extra_values':[(f.label,lic.member.extra.get(f.key,'')) for f in ExtraField.objects.all()]})
+    return render(request,'registry/detail.html',{'nav':'members','title':'پرونده عضو','lic':lic,'payment_form':PaymentForm(lic),'debt_form':DebtForm(),'document_form':DocumentForm(),'history':Audit.objects.filter(target=f'license:{pk}').select_related('actor')[:50],'photo':lic.documents.filter(kind='photo').last(),'member_extra_values':[(f.label,display_extra(lic.member.extra.get(f.key,''))) for f in ExtraField.objects.filter(target='member')],'license_extra_values':[(f.label,display_extra(lic.extra.get(f.key,''))) for f in ExtraField.objects.filter(target='license')]})
 
 @login_required
 @require_POST
@@ -215,10 +220,10 @@ def settings_view(request):
                     audit(request.user,'تنظیمات سامانه','settings',before,model_to_dict(app,exclude=['logo','partner_logo','designer_logo']))
                 elif action=='branding':
                     form=BrandingForm(request.POST,request.FILES,instance=app)
-                    before={**model_to_dict(app,exclude=['logo','partner_logo','designer_logo']),'logo':app.logo.name,'partner_logo':app.partner_logo.name,'designer_logo':app.designer_logo.name}
+                    before={**model_to_dict(app,exclude=['logo','partner_logo','designer_logo','letterhead_image']),'logo':app.logo.name,'partner_logo':app.partner_logo.name,'designer_logo':app.designer_logo.name,'letterhead_image':app.letterhead_image.name}
                     if not form.is_valid(): raise ValidationError(form.errors.as_text())
                     app=form.save()
-                    audit(request.user,'تغییر هویت و سربرگ','settings',before,{**model_to_dict(app,exclude=['logo','partner_logo','designer_logo']),'logo':app.logo.name,'partner_logo':app.partner_logo.name,'designer_logo':app.designer_logo.name})
+                    audit(request.user,'تغییر هویت و سربرگ','settings',before,{**model_to_dict(app,exclude=['logo','partner_logo','designer_logo','letterhead_image']),'logo':app.logo.name,'partner_logo':app.partner_logo.name,'designer_logo':app.designer_logo.name,'letterhead_image':app.letterhead_image.name})
                 elif action=='grade':
                     name=request.POST.get('name','').strip()
                     if not name: raise ValidationError('نام درجه الزامی است.')
@@ -228,7 +233,10 @@ def settings_view(request):
                     t=Tariff(year=int(normalize(request.POST.get('year'))),grade_id=int(request.POST.get('grade')),amount=int(normalize(request.POST.get('amount'))))
                     t.full_clean(); t.save(); audit(request.user,'ثبت تعرفه',f'tariff:{t.pk}',after=model_to_dict(t))
                 elif action=='field':
-                    f=ExtraField(key=request.POST.get('key',''),label=request.POST.get('label',''),required=request.POST.get('required')=='on'); f.full_clean(); f.save()
+                    field_form=ExtraFieldForm(request.POST)
+                    if not field_form.is_valid(): raise ValidationError(field_form.errors.as_text())
+                    data=field_form.cleaned_data
+                    f=ExtraField(key=data['key'],label=data['label'],target=data['target'],field_type=data['field_type'],choices=data['choices_list'],required=data['required']); f.full_clean(); f.save()
                     audit(request.user,'تعریف فیلد','field',after=model_to_dict(f))
                 elif action=='bill':
                     count=bill_year(request.user,app.current_year)
@@ -237,7 +245,7 @@ def settings_view(request):
             messages.success(request,'تغییرات ذخیره شد.')
         except (ValueError,ValidationError,IntegrityError) as e: messages.error(request,error_message(e))
         return redirect('settings')
-    return render(request,'registry/settings.html',{'nav':'settings','title':'تنظیمات و تعرفه‌ها','grades':Grade.objects.all(),'tariffs':Tariff.objects.select_related('grade').order_by('-year'),'fields':ExtraField.objects.all(),'branding_form':BrandingForm(instance=app)})
+    return render(request,'registry/settings.html',{'nav':'settings','title':'تنظیمات و تعرفه‌ها','grades':Grade.objects.all(),'tariffs':Tariff.objects.select_related('grade').order_by('-year'),'fields':ExtraField.objects.all(),'extra_field_form':ExtraFieldForm(),'branding_form':BrandingForm(instance=app)})
 
 @login_required
 def users_view(request):
@@ -285,13 +293,16 @@ EXPORT_FIELDS=[('name','نام و نام خانوادگی'),('national_id','کد
 @login_required
 def export_excel(request):
     require(request.user,'export')
-    selected=request.GET.getlist('field') or [k for k,v in EXPORT_FIELDS]
-    fields=[(k,v) for k,v in EXPORT_FIELDS if k in selected]
+    all_fields=EXPORT_FIELDS+[(f'{f.target}_extra_{f.key}',f'{f.get_target_display()}: {f.label}') for f in ExtraField.objects.all()]
+    selected=request.GET.getlist('field') or [k for k,v in all_fields]
+    fields=[(k,v) for k,v in all_fields if k in selected]
     wb=Workbook(); ws=wb.active; ws.title='اعضا'; ws.sheet_view.rightToLeft=True
     ws.append([v for k,v in fields])
     year=Settings.current().current_year
     for lic in summarize(get_licenses(),year):
         row={'name':lic.member.name,'national_id':lic.member.national_id,'phone':lic.member.phone,'number':lic.number,'business_name':lic.business_name,'grade':lic.grade.name,'year':year,'settled':'تسویه' if lic.current_due and lic.current_due.settled else 'تسویه نشده' if lic.current_due else 'صادر نشده','past':lic.past_balance,'balance':lic.balance,'credit':lic.credit}
+        row.update({f'member_extra_{f.key}':display_extra(lic.member.extra.get(f.key,'')) for f in ExtraField.objects.filter(target='member')})
+        row.update({f'license_extra_{f.key}':display_extra(lic.extra.get(f.key,'')) for f in ExtraField.objects.filter(target='license')})
         ws.append([row[k] for k,v in fields])
         for cell in ws[ws.max_row]:
             if isinstance(cell.value,str): cell.data_type='s'
@@ -301,13 +312,30 @@ def export_excel(request):
     audit(request.user,'خروجی اکسل','export',after={'fields':selected,'count':ws.max_row-1})
     return FileResponse(out,as_attachment=True,filename='members.xlsx')
 
+def custom_import_value(field,value):
+    value=normalize(value)
+    if field.field_type=='boolean':
+        if not value: return ''
+        if value.lower() in ['true','1','yes','بله']: return 'true'
+        if value.lower() in ['false','0','no','خیر']: return 'false'
+    return value
+
+def custom_stored_value(field,value):
+    if field.field_type=='boolean':
+        if value=='true': return True
+        if value=='false': return False
+        return None
+    return value
+
 IMPORT_FIELDS=[('name','نام و نام خانوادگی',True),('national_id','کد ملی',True),('phone','تلفن همراه',False),('number','شماره جواز',True),('business_name','نام واحد صنفی',True),('grade','نام درجه',True),('opening_balance','مانده بدهی گذشته',False),('opening_year','سال بدهی گذشته (اختیاری)',False),('father_name','نام پدر',False),('birth_date','تاریخ تولد شمسی',False),('home_address','نشانی سکونت',False),('activity','رسته فعالیت',False),('business_address','نشانی واحد صنفی',False),('postal_code','کد پستی',False),('issued_on','تاریخ صدور شمسی',False),('expires_on','تاریخ انقضا شمسی',False)]
 
 @login_required
 def import_excel(request):
     require(request.user,'edit')
-    import_fields=IMPORT_FIELDS+ [('extra_'+f.key,f.label,f.required) for f in ExtraField.objects.all()]
-    context={'nav':'excel','title':'ورود و خروج اکسل','import_fields':import_fields,'export_fields':EXPORT_FIELDS,'mappings':ImportMapping.objects.all()}
+    custom_fields=[(f'{f.target}_extra_{f.key}',f'{f.get_target_display()}: {f.label}',f.required) for f in ExtraField.objects.all()]
+    import_fields=IMPORT_FIELDS+custom_fields
+    export_fields=EXPORT_FIELDS+[(f'{f.target}_extra_{f.key}',f'{f.get_target_display()}: {f.label}') for f in ExtraField.objects.all()]
+    context={'nav':'excel','title':'ورود و خروج اکسل','import_fields':import_fields,'export_fields':export_fields,'mappings':ImportMapping.objects.all()}
     if request.method=='POST':
         try:
             step=request.POST.get('step')
@@ -360,9 +388,10 @@ def import_excel(request):
                     except ValueError: errors.append('مبلغ یا سال بدهی گذشته معتبر نیست')
                     member_data={k:item.get(k,'') for k in ['name','national_id','phone','father_name','birth_date']}
                     member_data['address']=item.get('home_address','')
-                    member_data.update({k:v for k,v in item.items() if k.startswith('extra_')})
+                    member_data.update({'extra_'+f.key:item.get('member_extra_'+f.key,'') for f in ExtraField.objects.filter(target='member')})
                     license_data={k:item.get(k,'') for k in ['number','business_name','activity','postal_code','issued_on','expires_on']}
                     license_data.update(grade=grades.get(item.get('grade')),address=item.get('business_address',''),active=True)
+                    license_data.update({'extra_'+f.key:item.get('license_extra_'+f.key,'') for f in ExtraField.objects.filter(target='license')})
                     for validation_form in [MemberForm(member_data),LicenseForm(license_data)]:
                         if not validation_form.is_valid():
                             for field,field_errors in validation_form.errors.items():
@@ -378,8 +407,8 @@ def import_excel(request):
                 with transaction.atomic():
                     batch=get_object_or_404(ImportBatch.objects.select_for_update(),token=saved['token'],actor=request.user,committed_at=None)
                     for row in saved['rows']:
-                        member=Member.objects.create(name=row['name'],national_id=row['national_id'],phone=row.get('phone',''),father_name=row.get('father_name',''),birth_date=jalali_date(row['birth_date']) if row.get('birth_date') else '',address=row.get('home_address',''),extra={f.key:row.get('extra_'+f.key,'') for f in ExtraField.objects.all()})
-                        lic=License.objects.create(member=member,number=row['number'],business_name=row['business_name'],grade=Grade.objects.get(name=row['grade']),activity=row.get('activity',''),address=row.get('business_address',''),postal_code=row.get('postal_code',''),issued_on=jalali_date(row['issued_on']) if row.get('issued_on') else '',expires_on=jalali_date(row['expires_on']) if row.get('expires_on') else '')
+                        member=Member.objects.create(name=row['name'],national_id=row['national_id'],phone=row.get('phone',''),father_name=row.get('father_name',''),birth_date=jalali_date(row['birth_date']) if row.get('birth_date') else '',address=row.get('home_address',''),extra={f.key:custom_stored_value(f,row.get('member_extra_'+f.key,'')) for f in ExtraField.objects.filter(target='member')})
+                        lic=License.objects.create(member=member,number=row['number'],business_name=row['business_name'],grade=Grade.objects.get(name=row['grade']),activity=row.get('activity',''),address=row.get('business_address',''),postal_code=row.get('postal_code',''),issued_on=jalali_date(row['issued_on']) if row.get('issued_on') else '',expires_on=jalali_date(row['expires_on']) if row.get('expires_on') else '',extra={f.key:custom_stored_value(f,row.get('license_extra_'+f.key,'')) for f in ExtraField.objects.filter(target='license')})
                         GradeHistory.objects.create(license=lic,grade=lic.grade,actor=request.user)
                         amount=int(row.get('opening_balance') or 0)
                         if amount:
@@ -405,7 +434,7 @@ def password_change(request):
 
 def branding_image(request,kind):
     # Public branding only: never accepts a document ID or arbitrary storage path.
-    if kind not in ['logo','partner_logo','designer_logo']: raise Http404
+    if kind not in ['logo','partner_logo','designer_logo','letterhead_image']: raise Http404
     image=getattr(Settings.current(),kind)
     if not image: raise Http404
     response=FileResponse(image.open('rb'),content_type='image/png')
@@ -418,6 +447,11 @@ def member_report(request,member_id):
     member=get_object_or_404(Member,pk=member_id)
     app=Settings.current()
     licenses=summarize(get_licenses().filter(member=member),app.current_year)
+    member_extra_fields=list(ExtraField.objects.filter(target='member'))
+    license_extra_fields=list(ExtraField.objects.filter(target='license'))
+    member_extra_values=[(field.label,display_extra(member.extra.get(field.key,''))) for field in member_extra_fields]
+    for license in licenses:
+        license.extra_values=[(field.label,display_extra(license.extra.get(field.key,''))) for field in license_extra_fields]
     total_balance=sum(l.balance for l in licenses)
     total_credit=sum(l.credit for l in licenses)
     receipts=Receipt.objects.filter(license__member=member).select_related('license','actor').order_by('paid_on','pk')
@@ -428,6 +462,8 @@ def member_report(request,member_id):
         wb=Workbook(); profile=wb.active; profile.title='مشخصات عضو'
         profile.append([app.title]); profile.append(['گزارش اختصاصی عضو',member.name])
         for label,value in [('کد ملی',member.national_id),('تلفن',member.phone),('واحد پول',app.currency),('مانده بدهی',total_balance),('اعتبار آزاد',total_credit),('نشانی اتحادیه',app.report_address),('تلفن اتحادیه',app.report_phone),('توضیحات گزارش',app.report_footer)]: profile.append([label,value])
+        profile.append(['اطلاعات تکمیلی شخص'])
+        for label,value in member_extra_values: profile.append([label,value])
         streams=[]
         for field,anchor in [(app.logo,'D2'),(app.partner_logo,'F2')]:
             if field:
@@ -437,6 +473,10 @@ def member_report(request,member_id):
         dues.append(['شماره جواز','واحد صنفی','سال','مبنای بدهی','مبلغ اولیه','تخفیف','پرداخت تخصیص‌یافته','مانده','وضعیت'])
         for lic in licenses:
             for due in lic.dues.all(): dues.append([lic.number,lic.business_name,due.label,due.basis,due.amount,due.discount,due.paid,due.balance,'تسویه' if due.settled else 'باز'])
+        license_sheet=wb.create_sheet('جوازها')
+        license_sheet.append(['شماره جواز','واحد صنفی','رسته','درجه','نشانی','کد پستی','تاریخ صدور','تاریخ انقضا','وضعیت']+[field.label for field in license_extra_fields])
+        for lic in licenses:
+            license_sheet.append([lic.number,lic.business_name,lic.activity,lic.grade.name,lic.address,lic.postal_code,lic.issued_on,lic.expires_on,'فعال' if lic.active else 'غیرفعال']+[display_extra(lic.extra.get(field.key,'')) for field in license_extra_fields])
         payments=wb.create_sheet('دریافت‌ها')
         payments.append(['رسید','جواز','تاریخ','مبلغ','روش','پیگیری','اعتبار آزاد'])
         for r in receipts: payments.append([r.pk,r.license.number,r.paid_on,r.amount,r.get_method_display(),r.reference,r.available])
@@ -452,6 +492,6 @@ def member_report(request,member_id):
         output=BytesIO(); wb.save(output); output.seek(0)
         response=FileResponse(output,as_attachment=True,filename=f'member-{member.pk}.xlsx')
     else:
-        response=render(request,'registry/member_report.html',{'title':'گزارش اختصاصی عضو','member':member,'licenses':licenses,'receipts':receipts,'total_balance':total_balance,'total_credit':total_credit,'generated_at':timezone.localtime()})
+        response=render(request,'registry/member_report.html',{'title':'گزارش اختصاصی عضو','member':member,'licenses':licenses,'receipts':receipts,'total_balance':total_balance,'total_credit':total_credit,'generated_at':timezone.localtime(),'report_number':request.GET.get('report_number',str(member.pk))[:50],'report_attachment':request.GET.get('report_attachment','ندارد')[:100],'member_extra_values':member_extra_values})
     response['Cache-Control']='private, no-store'
     return response
