@@ -11,6 +11,17 @@ class Settings(models.Model):
     logo = models.FileField('لوگوی اتحادیه',upload_to=brand_path,blank=True)
     partner_logo = models.FileField('لوگوی نهاد بالادستی',upload_to=brand_path,blank=True)
     designer_logo = models.FileField('لوگوی طراح سامانه',upload_to=brand_path,blank=True)
+    letterhead_image = models.FileField('تصویر کامل سربرگ PNG',upload_to=brand_path,blank=True)
+    report_margin_top = models.PositiveSmallIntegerField('حاشیه بالای چاپ (میلی‌متر)',default=14)
+    report_margin_right = models.PositiveSmallIntegerField('حاشیه راست چاپ (میلی‌متر)',default=14)
+    report_margin_bottom = models.PositiveSmallIntegerField('حاشیه پایین چاپ (میلی‌متر)',default=14)
+    report_margin_left = models.PositiveSmallIntegerField('حاشیه چپ چاپ (میلی‌متر)',default=14)
+    report_date_x = models.PositiveSmallIntegerField('جای افقی تاریخ (درصد)',default=80)
+    report_date_y = models.PositiveSmallIntegerField('جای عمودی تاریخ (درصد)',default=25)
+    report_number_x = models.PositiveSmallIntegerField('جای افقی شماره (درصد)',default=80)
+    report_number_y = models.PositiveSmallIntegerField('جای عمودی شماره (درصد)',default=50)
+    report_attachment_x = models.PositiveSmallIntegerField('جای افقی پیوست (درصد)',default=80)
+    report_attachment_y = models.PositiveSmallIntegerField('جای عمودی پیوست (درصد)',default=75)
     designer_name = models.CharField('نام طراح / مجموعه طراح',max_length=120,blank=True)
     report_address = models.CharField('نشانی سربرگ',max_length=250,blank=True)
     report_phone = models.CharField('تلفن سربرگ',max_length=30,blank=True)
@@ -48,6 +59,7 @@ class License(models.Model):
     issued_on = models.CharField('تاریخ صدور شمسی',max_length=10,blank=True)
     expires_on = models.CharField('تاریخ انقضا شمسی',max_length=10,blank=True)
     active = models.BooleanField('فعال',default=True)
+    extra = models.JSONField('اطلاعات تکمیلی',default=dict,blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     def __str__(self): return self.business_name
 
@@ -64,15 +76,32 @@ class Tariff(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=['year','grade'],name='unique_tariff')]
 
+class FeeHead(models.Model):
+    name = models.CharField('عنوان سرفصل',max_length=100,unique=True)
+    description = models.CharField('توضیح',max_length=250,blank=True)
+    active = models.BooleanField('فعال',default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    def __str__(self): return self.name
+
+class FeeTariff(models.Model):
+    year = models.PositiveIntegerField('سال',validators=[MinValueValidator(1300),MaxValueValidator(1600)])
+    head = models.ForeignKey(FeeHead,on_delete=models.PROTECT,related_name='tariffs',verbose_name='سرفصل')
+    grade = models.ForeignKey(Grade,on_delete=models.PROTECT,verbose_name='درجه')
+    amount = models.PositiveBigIntegerField('مبلغ',validators=[MinValueValidator(1)])
+    class Meta:
+        constraints=[models.UniqueConstraint(fields=['year','head','grade'],name='unique_fee_tariff')]
+
 class Due(models.Model):
     license = models.ForeignKey(License,on_delete=models.PROTECT,related_name='dues')
+    fee_head = models.ForeignKey(FeeHead,on_delete=models.PROTECT,null=True,blank=True,related_name='dues',verbose_name='سرفصل دریافت')
+    fee_head_label = models.CharField('عنوان سرفصل هنگام صدور',max_length=100,blank=True)
     year = models.PositiveIntegerField(null=True,blank=True,validators=[MinValueValidator(1300),MaxValueValidator(1600)])
     basis = models.CharField(max_length=150)
     amount = models.PositiveBigIntegerField(validators=[MinValueValidator(1)])
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         ordering = ['year','id']
-        constraints = [models.UniqueConstraint(fields=['license','year'],name='unique_annual_due'),models.UniqueConstraint(fields=['license'],condition=Q(year__isnull=True),name='unique_opening_due'),models.CheckConstraint(condition=Q(amount__gt=0),name='positive_due')]
+        constraints = [models.UniqueConstraint(fields=['license','year'],condition=Q(year__isnull=False,fee_head__isnull=True),name='unique_annual_due'),models.UniqueConstraint(fields=['license','year','fee_head'],condition=Q(year__isnull=False,fee_head__isnull=False),name='unique_head_due'),models.UniqueConstraint(fields=['license'],condition=Q(year__isnull=True),name='unique_opening_due'),models.CheckConstraint(condition=Q(amount__gt=0),name='positive_due')]
     @property
     def paid(self): return sum(a.amount for a in self.allocations.all() if not a.reversed_at)
     @property
@@ -82,7 +111,9 @@ class Due(models.Model):
     @property
     def settled(self): return self.balance == 0
     @property
-    def label(self): return str(self.year) if self.year else 'مانده پیش از سامانه'
+    def label(self):
+        if not self.year: return 'مانده پیش از سامانه'
+        return f'{self.year} · {self.fee_head_label}' if self.fee_head_label else str(self.year)
 
 class Receipt(models.Model):
     request_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
@@ -131,8 +162,13 @@ class Document(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 class ExtraField(models.Model):
+    TARGETS=[('member','پرونده شخص'),('license','واحد صنفی / جواز')]
+    TYPES=[('text','متن'),('number','عدد'),('date','تاریخ شمسی'),('choice','انتخاب از فهرست'),('boolean','بله / خیر')]
     key = models.SlugField('شناسه انگلیسی',unique=True)
     label = models.CharField('عنوان فارسی',max_length=100)
+    target = models.CharField('محل نمایش',max_length=12,choices=TARGETS,default='member')
+    field_type = models.CharField('نوع فیلد',max_length=12,choices=TYPES,default='text')
+    choices = models.JSONField('گزینه‌ها',default=list,blank=True)
     required = models.BooleanField('الزامی',default=False)
 
 class Audit(models.Model):
@@ -160,3 +196,10 @@ class LoginThrottle(models.Model):
     key = models.CharField(max_length=64,unique=True)
     failures = models.PositiveIntegerField(default=0)
     locked_until = models.DateTimeField(null=True)
+
+
+class UserPermission(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name='custom_access')
+    permissions = models.JSONField('دسترسی‌های انتخاب‌شده',default=list,blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    def __str__(self): return f'دسترسی‌های {self.user.username}'

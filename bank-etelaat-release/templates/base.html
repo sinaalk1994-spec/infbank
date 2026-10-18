@@ -1,4 +1,4 @@
-{% load static ui %}<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#153c35"><title>{{ title|default:'ورود' }} · {{ app.title }}</title><link rel="stylesheet" href="{% static 'css/app.css' %}"><script src="{% static 'js/app.js' %}" defer></script></head><body>
+{% load static ui %}<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#211d49"><title>{{ title|default:'ورود' }} · {{ app.title }}</title><link rel="stylesheet" href="{% static 'css/app.css' %}"><script src="{% static 'js/app.js' %}" defer></script></head><body>
 <svg class="sprite" xmlns="http://www.w3.org/2000/svg"><defs>
 <symbol id="grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
 <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21v-2a7 7 0 0 1 14 0v2M17 4a4 4 0 0 1 0 8m3 9v-2a7 7 0 0 0-3-6"/></symbol>
@@ -25,11 +25,11 @@
 <a class="{% if nav == 'archive' %}active{% endif %}" href="{% url 'archive' %}"><svg><use href="#folder"/></svg>بایگانی مدارک</a>
 {% if can_edit %}<a class="{% if nav == 'excel' %}active{% endif %}" href="{% url 'excel' %}"><svg><use href="#sheet"/></svg>ورود و خروج اکسل</a>{% endif %}
 <div class="nav-label">مدیریت سامانه</div>
-{% if user.is_superuser %}<a class="{% if nav == 'users' %}active{% endif %}" href="{% url 'users' %}"><svg><use href="#shield"/></svg>کاربران و دسترسی‌ها</a>{% endif %}
+{% if can_admin %}<a class="{% if nav == 'users' %}active{% endif %}" href="{% url 'users' %}"><svg><use href="#shield"/></svg>کاربران و دسترسی‌ها</a>{% endif %}
 {% if can_audit %}<a class="{% if nav == 'audit' %}active{% endif %}" href="{% url 'audit' %}"><svg><use href="#clock"/></svg>ردپای فعالیت‌ها</a>{% endif %}
-{% if user.is_superuser %}<a class="{% if nav == 'settings' %}active{% endif %}" href="{% url 'settings' %}"><svg><use href="#settings"/></svg>تنظیمات و تعرفه‌ها</a>{% endif %}</nav>
+{% if can_admin %}<a class="{% if nav == 'settings' %}active{% endif %}" href="{% url 'settings' %}"><svg><use href="#settings"/></svg>تنظیمات و تعرفه‌ها</a>{% endif %}</nav>
 <div class="sidebar-note"><svg><use href="#shield"/></svg><strong>هر پرونده، یک سابقه روشن</strong><p>اطلاعات اعضا و سوابق مالی<br>در یک فضای منظم و یکپارچه.</p></div>
-<div class="sidebar-footer"><span class="live-dot"></span>سال مالی {{ app.current_year|fa }}<span>نسخه ۱.۰</span></div></aside>
+<div class="sidebar-footer"><span class="live-dot"></span>سال مالی {{ app.current_year|fa }}<span>نسخه ۱.۰.۰</span></div></aside>
 <div class="app-shell"><header class="topbar"><button class="icon-button mobile-menu" aria-label="بازکردن منو" data-menu>☰</button><div class="breadcrumb">میز کار <span>/</span> <strong>{{ title }}</strong></div><form class="global-search" action="{% url 'members' %}"><svg><use href="#search"/></svg><input name="q" placeholder="جست‌وجوی نام، کد ملی یا شماره جواز…" aria-label="جست‌وجوی اعضا"></form><div class="profile"><div class="avatar small">{{ user.first_name|default:user.username|initials }}</div><span>{{ user.first_name|default:user.username }}<small><a href="{% url 'password' %}" title="تغییر رمز عبور">{{ role_label }} · حساب من</a></small></span><form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="icon-button" title="خروج" aria-label="خروج"><svg><use href="#logout"/></svg></button></form></div></header>
 <main id="main">
 {% else %}<main class="login-main">{% endif %}

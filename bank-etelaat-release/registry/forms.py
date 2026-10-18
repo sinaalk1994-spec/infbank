@@ -27,8 +27,8 @@ class MemberForm(forms.ModelForm):
         widgets = {'address':forms.Textarea(attrs={'rows':2})}
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
-        for field in ExtraField.objects.all():
-            self.fields['extra_'+field.key] = forms.CharField(label=field.label,required=field.required,initial=self.instance.extra.get(field.key,'') if self.instance.pk else '')
+        for field in ExtraField.objects.filter(target='member'):
+            self.fields['extra_'+field.key] = extra_form_field(field,self.instance.extra.get(field.key,'') if self.instance.pk else '')
     def clean_national_id(self):
         value = normalize(self.cleaned_data['national_id'])
         if not re.fullmatch(r'[0-9]{10}',value): raise ValidationError('کد ملی باید دقیقاً ۱۰ رقم باشد.')
@@ -36,9 +36,18 @@ class MemberForm(forms.ModelForm):
     def clean_birth_date(self):
         value = self.cleaned_data['birth_date']
         return jalali_date(value) if value else ''
+    def clean(self):
+        cleaned=super().clean()
+        for field in ExtraField.objects.filter(target='member',field_type='date'):
+            name='extra_'+field.key; value=cleaned.get(name)
+            if value:
+                try: cleaned[name]=jalali_date(value)
+                except ValidationError as error: self.add_error(name,error)
+        return cleaned
     def save(self,commit=True):
         obj = super().save(commit=False)
-        obj.extra = {f.key:self.cleaned_data.get('extra_'+f.key,'') for f in ExtraField.objects.all()}
+        prior=obj.extra or {}
+        obj.extra = {**prior,**{f.key:json_value(self.cleaned_data.get('extra_'+f.key,'')) for f in ExtraField.objects.filter(target='member')}}
         if commit: obj.save()
         return obj
 
@@ -56,6 +65,56 @@ class LicenseForm(forms.ModelForm):
         v=normalize(self.cleaned_data['postal_code'])
         if v and not re.fullmatch(r'[0-9]{10}',v): raise ValidationError('کد پستی باید ۱۰ رقم باشد.')
         return v
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        for field in ExtraField.objects.filter(target='license'):
+            self.fields['extra_'+field.key]=extra_form_field(field,self.instance.extra.get(field.key,'') if self.instance.pk else '')
+    def clean(self):
+        cleaned=super().clean()
+        for field in ExtraField.objects.filter(target='license',field_type='date'):
+            name='extra_'+field.key; value=cleaned.get(name)
+            if value:
+                try: cleaned[name]=jalali_date(value)
+                except ValidationError as error: self.add_error(name,error)
+        return cleaned
+    def save(self,commit=True):
+        obj=super().save(commit=False); prior=obj.extra or {}
+        obj.extra={**prior,**{f.key:json_value(self.cleaned_data.get('extra_'+f.key,'')) for f in ExtraField.objects.filter(target='license')}}
+        if commit: obj.save()
+        return obj
+
+def extra_form_field(field,initial=''):
+    common={'label':field.label,'required':field.required,'initial':initial}
+    if field.field_type=='number': return forms.DecimalField(**common,max_digits=18,decimal_places=2)
+    if field.field_type=='date': return forms.CharField(**common,help_text='مثلاً ۱۴۰۵/۰۱/۱۵')
+    if field.field_type=='choice': return forms.ChoiceField(**common,choices=[('', 'انتخاب کنید')]+[(str(v),str(v)) for v in field.choices])
+    if field.field_type=='boolean':
+        common['initial']='true' if initial is True else 'false' if initial is False else ''
+        return forms.TypedChoiceField(**common,choices=[('', 'انتخاب کنید'),('true','بله'),('false','خیر')],coerce=lambda v: v=='true',empty_value=None)
+    return forms.CharField(**common,widget=forms.Textarea(attrs={'rows':2}) if field.field_type=='text' else forms.TextInput())
+
+def json_value(value):
+    from decimal import Decimal
+    return str(value) if isinstance(value,Decimal) else value
+
+class ExtraFieldForm(forms.Form):
+    key=forms.SlugField(label='شناسه انگلیسی',max_length=50)
+    label=forms.CharField(label='عنوان فارسی',max_length=100)
+    target=forms.ChoiceField(label='محل نمایش',choices=ExtraField.TARGETS)
+    field_type=forms.ChoiceField(label='نوع فیلد',choices=ExtraField.TYPES)
+    choices=forms.CharField(label='گزینه‌ها (هر گزینه در یک خط)',required=False,widget=forms.Textarea(attrs={'rows':3}))
+    required=forms.BooleanField(label='الزامی',required=False)
+    def clean_key(self):
+        value=self.cleaned_data['key'].lower()
+        if ExtraField.objects.filter(key=value).exists(): raise ValidationError('این شناسه قبلاً استفاده شده است.')
+        return value
+    def clean(self):
+        cleaned=super().clean()
+        values=[v.strip() for v in cleaned.get('choices','').splitlines() if v.strip()]
+        if cleaned.get('field_type')=='choice' and not values: self.add_error('choices','برای فیلد انتخابی دست‌کم یک گزینه بنویسید.')
+        if len(values)>100 or any(len(v)>100 for v in values): self.add_error('choices','حداکثر ۱۰۰ گزینه و هر گزینه حداکثر ۱۰۰ نویسه باشد.')
+        cleaned['choices_list']=values
+        return cleaned
 
 class PaymentForm(forms.Form):
     request_id = forms.UUIDField(widget=forms.HiddenInput, initial=uuid.uuid4)
@@ -99,10 +158,38 @@ class DocumentForm(forms.ModelForm):
 class BrandingForm(forms.ModelForm):
     class Meta:
         model=Settings
-        fields=['logo','designer_logo','designer_name','partner_logo','report_address','report_phone','report_footer']
+        fields=['logo','designer_logo','designer_name','partner_logo','letterhead_image','report_address','report_phone','report_footer',
+                'report_margin_top','report_margin_right','report_margin_bottom','report_margin_left',
+                'report_date_x','report_date_y','report_number_x','report_number_y','report_attachment_x','report_attachment_y']
         widgets={name:forms.FileInput(attrs={'accept':'image/png,image/jpeg,image/webp'}) for name in ['logo','partner_logo','designer_logo']}
+        widgets.update({'letterhead_image':forms.FileInput(attrs={'accept':'image/png'})})
+        for _name in ['report_margin_top','report_margin_right','report_margin_bottom','report_margin_left']:
+            widgets[_name]=forms.NumberInput(attrs={'min':0,'max':40,'step':1})
+        for _name in ['report_date_x','report_date_y','report_number_x','report_number_y','report_attachment_x','report_attachment_y']:
+            widgets[_name]=forms.NumberInput(attrs={'min':0,'max':100,'step':1})
     def clean(self):
         cleaned=super().clean()
+        for name in ['report_margin_top','report_margin_right','report_margin_bottom','report_margin_left']:
+            value=cleaned.get(name)
+            if value is not None and value>40: self.add_error(name,'حاشیه باید بین صفر تا ۴۰ میلی‌متر باشد.')
+        for name in ['report_date_x','report_date_y','report_number_x','report_number_y','report_attachment_x','report_attachment_y']:
+            value=cleaned.get(name)
+            if value is not None and value>100: self.add_error(name,'جایگاه باید بین صفر تا ۱۰۰ درصد باشد.')
+        upload=self.files.get('letterhead_image')
+        if upload is not None:
+            from django.core.files.base import ContentFile
+            if upload.size>8*1024*1024:
+                self.add_error('letterhead_image','حداکثر حجم سربرگ ۸ مگابایت است.')
+            else:
+                try:
+                    picture=Image.open(upload)
+                    if picture.format!='PNG' or picture.width*picture.height>25_000_000:
+                        self.add_error('letterhead_image','فقط PNG با حداکثر ۲۵ میلیون پیکسل پذیرفته می‌شود.')
+                    else:
+                        picture.load(); data=BytesIO(); picture.convert('RGBA').save(data,format='PNG')
+                        cleaned['letterhead_image']=ContentFile(data.getvalue(),name='letterhead.png')
+                except (UnidentifiedImageError,OSError,Image.DecompressionBombError):
+                    self.add_error('letterhead_image','فایل PNG معتبر نیست.')
         from django.core.files.base import ContentFile
         for name in ['logo','partner_logo','designer_logo']:
             upload=self.files.get(name)
