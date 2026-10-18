@@ -1,0 +1,39 @@
+{
+  "project": "صنف‌یار / infbank",
+  "stack": {
+    "backend": "Django server-rendered templates",
+    "frontend": "HTML templates, vanilla JavaScript, static CSS",
+    "noBuildStep": true
+  },
+  "locale": {
+    "language": "Persian",
+    "locale": "fa-IR",
+    "direction": "rtl"
+  },
+  "design": {
+    "direction": "Professional financial-administration workspace with clear information hierarchy and restrained Persian geometric ornament",
+    "palette": {
+      "background": "#f7f7fc",
+      "surface": "#ffffff",
+      "ink": "#242440",
+      "primary": "#5144bb",
+      "secondary": "#315b9b",
+      "accent": "#c6ad78",
+      "danger": "#a83e63"
+    },
+    "font": "Vazirmatn",
+    "motif": "static/images/geometric-motif.svg"
+  },
+  "decisions": [
+    "Keep the Django template and vanilla JavaScript architecture; do not introduce React, Tailwind, or a build pipeline.",
+    "Use the midnight navy and violet visual system consistently across the dashboard, tables, forms, dialogs, and settings.",
+    "Keep dense financial data readable with clear labels, restrained row hover, semantic status colors, and responsive overflow where needed.",
+    "Use geometric ornament sparingly and reserve saturated color for primary actions, statuses, and financial emphasis.",
+    "Provide visible keyboard focus, accessible labels, responsive layout, and reduced-motion support."
+  ],
+  "constraints": [
+    "Preserve financial behavior and audit history.",
+    "Never expose member document storage publicly.",
+    "Sensitive tariff changes and financial reversals require manager approval and a recorded reason."
+  ]
+}
